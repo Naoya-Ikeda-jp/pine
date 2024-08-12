@@ -1,0 +1,1583 @@
+//@version=5
+//indicator("OR_Auto Fib Retracement", overlay=true)
+//AutoFib+PBCone+UltimateIndi+
+indicator("OR_AutoFib+PBCone+UltimateIndi_Auto Fib Retracement",
+  max_lines_count   = 500,
+  max_bars_back     = 5000,
+  overlay   	    = true)
+
+//autofib***************************************************************************
+//***************************************************************************
+devTooltip = "Deviation is a multiplier that affects how much the price should deviate from the previous pivot in order for the bar to become a new pivot."
+depthTooltip = "The minimum number of bars that will be taken into account when calculating the indicator."
+// pivots threshold
+threshold_multiplier = input.float(title="Deviation", defval=3, minval=0, tooltip=devTooltip)
+dev_threshold = ta.atr(10) / close * 100 * threshold_multiplier
+depth = input.int(title="Depth", defval=10, minval=1, tooltip=depthTooltip)
+reverse = input(false, "Reverse")
+var extendLeft = input(false, "Extend Left????|????Extend Right", inline = "Extend Lines")
+var extendRight = input(true, "", inline = "Extend Lines")
+var extending = extend.none
+if extendLeft and extendRight
+    extending := extend.both
+if extendLeft and not extendRight
+    extending := extend.left
+if not extendLeft and extendRight
+    extending := extend.right
+prices = input(true, "Show Prices")
+levels = input(true, "Show Levels", inline = "Levels")
+levelsFormat = input.string("Values", "", options = ["Values", "Percent"], inline = "Levels")
+labelsPosition = input.string("Left", "Labels Position", options = ["Left", "Right"])
+var int backgroundTransparency = input.int(85, "Background Transparency", minval = 0, maxval = 100)
+
+var line lineLast = na
+var int iLast = 0
+var int iPrev = 0
+var float pLast = 0
+var isHighLast = false // otherwise the last pivot is a low pivot
+
+pivots(src, length, isHigh) =>
+    l2 = length * 2
+    c = nz(src[length])
+    ok = true
+    for i = 0 to l2
+        if isHigh and src[i] > c
+            ok := false
+
+        if not isHigh and src[i] < c
+            ok := false
+    if ok
+        [bar_index[length], c]
+    else
+        [int(na), float(na)]
+[iH, pH] = pivots(high, depth / 2, true)
+[iL, pL] = pivots(low, depth / 2, false)
+
+calc_dev(base_price, price) =>
+    100 * (price - base_price) / price
+
+pivotFound(dev, isHigh, index, price) =>
+    if isHighLast == isHigh and not na(lineLast)
+        // same direction
+        if isHighLast ? price > pLast : price < pLast
+            line.set_xy2(lineLast, index, price)
+            [lineLast, isHighLast]
+        else
+            [line(na), bool(na)]
+    else // reverse the direction (or create the very first line)
+        if math.abs(dev) > dev_threshold
+            // price move is significant
+            id = line.new(iLast, pLast, index, price, color=color.gray, width=1, style=line.style_dashed)
+            [id, isHigh]
+        else
+            [line(na), bool(na)]
+
+if not na(iH)
+    dev = calc_dev(pLast, pH)
+    [id, isHigh] = pivotFound(dev, true, iH, pH)
+    if not na(id)
+        if id != lineLast
+            line.delete(lineLast)
+        lineLast := id
+        isHighLast := isHigh
+        iPrev := iLast
+        iLast := iH
+        pLast := pH
+else
+    if not na(iL)
+        dev = calc_dev(pLast, pL)
+        [id, isHigh] = pivotFound(dev, false, iL, pL)
+        if not na(id)
+            if id != lineLast
+                line.delete(lineLast)
+            lineLast := id
+            isHighLast := isHigh
+            iPrev := iLast
+            iLast := iL
+            pLast := pL
+
+_draw_line(price, col) =>
+    var id = line.new(iLast, price, bar_index, price, color=col, width=1, extend=extending)
+    if not na(lineLast)
+        line.set_xy1(id, line.get_x1(lineLast), price)
+        line.set_xy2(id, line.get_x2(lineLast), price)  
+	id  
+
+
+_draw_label(price, txt, txtColor) =>
+    x = labelsPosition == "Left" ? line.get_x1(lineLast) : not extendRight ? line.get_x2(lineLast) : bar_index
+    labelStyle = labelsPosition == "Left" ? label.style_label_right : label.style_label_left
+    align = labelsPosition == "Left" ? text.align_right : text.align_left
+    labelsAlignStrLeft = txt + '\n ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ? \n'
+    labelsAlignStrRight = '       ' + txt + '\n ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ?  ? \n'
+    labelsAlignStr = labelsPosition == "Left" ? labelsAlignStrLeft : labelsAlignStrRight
+    var id = label.new(x=x, y=price, text=labelsAlignStr, textcolor=txtColor, style=labelStyle, textalign=align, color=#00000000)
+    label.set_xy(id, x, price)
+    label.set_text(id, labelsAlignStr)
+    label.set_textcolor(id, txtColor)
+
+_wrap(txt) =>
+    "(" + str.tostring(txt, format.mintick) + ")"
+
+_label_txt(level, price) =>
+    l = levelsFormat == "Values" ? str.tostring(level) : str.tostring(level * 100) + "%"
+    (levels ? l : "") + (prices ? _wrap(price) : "")
+
+_crossing_level(sr, r) =>
+    (r > sr and r < sr[1]) or (r < sr and r > sr[1])
+
+startPrice = reverse ? line.get_y1(lineLast) : pLast
+endPrice = reverse ? pLast : line.get_y1(lineLast)
+
+iHL = startPrice > endPrice
+diff = (iHL ? -1 : 1) * math.abs(startPrice - endPrice)
+
+processLevel(show, value, colorL, lineIdOther) =>
+    float m = value
+	r = startPrice + diff * m
+    if show
+		lineId = _draw_line(r, colorL)
+        _draw_label(r, _label_txt(m, r), colorL)
+        if _crossing_level(close, r)
+            alert("Autofib: " + syminfo.ticker + " crossing level " + str.tostring(value))
+        if not na(lineIdOther)
+            linefill.new(lineId, lineIdOther, color = color.new(colorL, backgroundTransparency))
+		lineId
+    else
+		lineIdOther
+
+show_0 = input(true, "", inline = "Level0")
+value_0 = input(0, "", inline = "Level0")
+color_0 = input(#787b86, "", inline = "Level0")
+
+show_0_236 = input(true, "", inline = "Level0")
+value_0_236 = input(0.236, "", inline = "Level0")
+color_0_236 = input(#f44336, "", inline = "Level0")
+
+show_0_382 = input(true, "", inline = "Level1")
+value_0_382 = input(0.382, "", inline = "Level1")
+color_0_382 = input(#81c784, "", inline = "Level1")
+
+show_0_5 = input(true, "", inline = "Level1")
+value_0_5 = input(0.5, "", inline = "Level1")
+color_0_5 = input(#4caf50, "", inline = "Level1")
+
+show_0_618 = input(true, "", inline = "Level2")
+value_0_618 = input(0.618, "", inline = "Level2")
+color_0_618 = input(#009688, "", inline = "Level2")
+
+show_0_65 = input(true, "", inline = "Level2")
+value_0_65 = input(0.65, "", inline = "Level2")
+color_0_65 = input(#009688, "", inline = "Level2")
+
+show_0_786 = input(true, "", inline = "Level3")
+value_0_786 = input(0.786, "", inline = "Level3")
+color_0_786 = input(#64b5f6, "", inline = "Level3")
+
+show_1 = input(true, "", inline = "Level3")
+value_1 = input(1, "", inline = "Level3")
+color_1 = input(#787b86, "", inline = "Level3")
+
+show_1_272 = input(false, "", inline = "Level4")
+value_1_272 = input(1.272, "", inline = "Level4")
+color_1_272 = input(#81c784, "", inline = "Level4")
+
+show_1_414 = input(false, "", inline = "Level4")
+value_1_414 = input(1.414, "", inline = "Level4")
+color_1_414 = input(#f44336, "", inline = "Level4")
+
+//’Ç‰Á**********************************************
+show_1_5 = input(false, "", inline = "Level5")
+value_1_5 = input(1.5, "", inline = "Level5")
+color_1_5 = input(#64b5f6, "", inline = "Level5")
+
+//default
+show_1_618 = input(false, "", inline = "Level5")
+value_1_618 = input(1.618, "", inline = "Level5")
+color_1_618 = input(#2962ff, "", inline = "Level5")
+
+//default
+show_1_65 = input(false, "", inline = "Level5")
+value_1_65 = input(1.65, "", inline = "Level5")
+color_1_65 = input(#2962ff, "", inline = "Level5")
+
+//’Ç‰Á**********************************************
+show_1_786 = input(false, "", inline = "Level5")
+value_1_786 = input(1.786, "", inline = "Level5")
+color_1_786 = input(#64b5f6, "", inline = "Level5")
+
+//’Ç‰Á**********************************************
+show_2 = input(false, "", inline = "Level6")
+value_2 = input(2, "", inline = "Level6")
+color_2 = input(#81c784, "", inline = "Level6")
+
+//’Ç‰Á**********************************************
+show_2_272 = input(false, "", inline = "Level6")
+value_2_272 = input(2.272, "", inline = "Level6")
+color_2_272 = input(#81c784, "", inline = "Level6")
+
+//’Ç‰Á**********************************************
+show_2_414 = input(false, "", inline = "Level6")
+value_2_414 = input(2.414, "", inline = "Level6")
+color_2_414 = input(#f44336, "", inline = "Level6")
+
+//’Ç‰Á**********************************************
+show_2_5 = input(false, "", inline = "Level6")
+value_2_5 = input(2.5, "", inline = "Level6")
+color_2_5 = input(#4caf50, "", inline = "Level6")
+
+//default
+show_2_618 = input(false, "", inline = "Level6")
+value_2_618 = input(2.618, "", inline = "Level6")
+color_2_618 = input(#f44336, "", inline = "Level6")
+
+//default
+show_2_65 = input(false, "", inline = "Level6")
+value_2_65 = input(2.65, "", inline = "Level6")
+color_2_65 = input(#f44336, "", inline = "Level6")
+
+//’Ç‰Á**********************************************
+show_2_786 = input(false, "", inline = "Level6")
+value_2_786 = input(2.786, "", inline = "Level6")
+color_2_786 = input(#64b5f6, "", inline = "Level6")
+
+//’Ç‰Á**********************************************
+show_3 = input(false, "", inline = "Level7")
+value_3 = input(3, "", inline = "Level7")
+color_3 = input(#81c784, "", inline = "Level7")
+
+show_3_618 = input(false, "", inline = "Level7")
+value_3_618 = input(3.618, "", inline = "Level7")
+color_3_618 = input(#9c27b0, "", inline = "Level7")
+
+show_3_65 = input(false, "", inline = "Level7")
+value_3_65 = input(3.65, "", inline = "Level7")
+color_3_65 = input(#9c27b0, "", inline = "Level7")
+
+show_4_236 = input(false, "", inline = "Level8")
+value_4_236 = input(4.236, "", inline = "Level8")
+color_4_236 = input(#e91e63, "", inline = "Level8")
+
+show_4_618 = input(false, "", inline = "Level8")
+value_4_618 = input(4.618, "", inline = "Level8")
+color_4_618 = input(#81c784, "", inline = "Level8")
+
+show_neg_0_236 = input(true, "", inline = "Level9")
+value_neg_0_236 = input(-0.236, "", inline = "Level9")
+color_neg_0_236 = input(#f44336, "", inline = "Level9")
+
+show_neg_0_382 = input(true, "", inline = "Level9")
+value_neg_0_382 = input(-0.382, "", inline = "Level9")
+color_neg_0_382 = input(#81c784, "", inline = "Level9")
+
+//’Ç‰Á**********************************************
+show_neg_0_5 = input(true, "", inline = "Level9")
+value_neg_0_5 = input(-0.5, "", inline = "Level9")
+color_neg_0_5 = input(#009688, "", inline = "Level9")
+
+//default
+show_neg_0_618 = input(true, "", inline = "Level10")
+value_neg_0_618 = input(-0.618, "", inline = "Level10")
+color_neg_0_618 = input(#009688, "", inline = "Level10")
+
+//default
+show_neg_0_65 = input(true, "", inline = "Level10")
+value_neg_0_65 = input(-0.65, "", inline = "Level10")
+color_neg_0_65 = input(#009688, "", inline = "Level10")
+
+//’Ç‰Á**********************************************
+show_neg_0_786 = input(true, "", inline = "Level10")
+value_neg_0_786 = input(-0.786, "", inline = "Level10")
+color_neg_0_786 = input(#009688, "", inline = "Level10")
+
+//’Ç‰Á**********************************************
+show_neg_1 = input(true, "", inline = "Level10")
+value_neg_1 = input(-1, "", inline = "Level10")
+color_neg_1 = input(#009688, "", inline = "Level10")
+
+//’Ç‰Á**********************************************
+show_neg_1_272 = input(false, "", inline = "Level11")
+value_neg_1_272 = input(-1.272, "", inline = "Level11")
+color_neg_1_272 = input(#009688, "", inline = "Level11")
+
+//’Ç‰Á**********************************************
+show_neg_1_414 = input(false, "", inline = "Level11")
+value_neg_1_414 = input(-1.414, "", inline = "Level11")
+color_neg_1_414 = input(#009688, "", inline = "Level11")
+
+//’Ç‰Á**********************************************
+show_neg_1_5 = input(false, "", inline = "Level11")
+value_neg_1_5 = input(-1.5, "", inline = "Level11")
+color_neg_1_5 = input(#009688, "", inline = "Level11")
+
+//’Ç‰Á**********************************************
+show_neg_1_618 = input(false, "", inline = "Level11")
+value_neg_1_618 = input(-1.618, "", inline = "Level11")
+color_neg_1_618 = input(#009688, "", inline = "Level11")
+
+//’Ç‰Á**********************************************
+show_neg_1_65 = input(false, "", inline = "Level11")
+value_neg_1_65 = input(-1.65, "", inline = "Level11")
+color_neg_1_65 = input(#009688, "", inline = "Level11")
+
+//’Ç‰Á**********************************************
+show_neg_1_786 = input(false, "", inline = "Level11")
+value_neg_1_786 = input(-1.786, "", inline = "Level11")
+color_neg_1_786 = input(#009688, "", inline = "Level11")
+
+//’Ç‰Á**********************************************
+show_neg_2 = input(false, "", inline = "Level12")
+value_neg_2 = input(-2, "", inline = "Level12")
+color_neg_2 = input(#009688, "", inline = "Level12")
+
+//’Ç‰Á**********************************************
+show_neg_2_272 = input(false, "", inline = "Level12")
+value_neg_2_272 = input(-2.272, "", inline = "Level12")
+color_neg_2_272 = input(#009688, "", inline = "Level12")
+
+//’Ç‰Á**********************************************
+show_neg_2_414 = input(false, "", inline = "Level12")
+value_neg_2_414 = input(-2.414, "", inline = "Level12")
+color_neg_2_414 = input(#009688, "", inline = "Level12")
+
+//’Ç‰Á**********************************************
+show_neg_2_5 = input(false, "", inline = "Level12")
+value_neg_2_5 = input(-2.5, "", inline = "Level12")
+color_neg_2_5 = input(#009688, "", inline = "Level12")
+
+//’Ç‰Á**********************************************
+show_neg_2_618 = input(false, "", inline = "Level12")
+value_neg_2_618 = input(-2.618, "", inline = "Level12")
+color_neg_2_618 = input(#009688, "", inline = "Level12")
+
+//’Ç‰Á**********************************************
+show_neg_2_65 = input(false, "", inline = "Level12")
+value_neg_2_65 = input(-2.65, "", inline = "Level12")
+color_neg_2_65 = input(#009688, "", inline = "Level12")
+
+//’Ç‰Á**********************************************
+show_neg_2_786 = input(false, "", inline = "Level12")
+value_neg_2_786 = input(-2.786, "", inline = "Level12")
+color_neg_2_786 = input(#009688, "", inline = "Level12")
+
+//’Ç‰Á**********************************************
+show_neg_3 = input(false, "", inline = "Level13")
+value_neg_3 = input(-3, "", inline = "Level13")
+color_neg_3 = input(#009688, "", inline = "Level13")
+
+//’Ç‰Á**********************************************
+show_neg_3_618 = input(false, "", inline = "Level13")
+value_neg_3_618 = input(-3.618, "", inline = "Level13")
+color_neg_3_618 = input(#009688, "", inline = "Level13")
+
+//’Ç‰Á**********************************************
+show_neg_3_65 = input(false, "", inline = "Level13")
+value_neg_3_65 = input(-3.65, "", inline = "Level13")
+color_neg_3_65 = input(#009688, "", inline = "Level13")
+
+
+
+lineId0 = processLevel(show_neg_0_65, value_neg_0_65, color_neg_0_65, line(na))
+lineId1 = processLevel(show_neg_0_618, value_neg_0_618, color_neg_0_618, lineId0)
+lineId2 = processLevel(show_neg_0_382, value_neg_0_382, color_neg_0_382, lineId1)
+lineId3 = processLevel(show_neg_0_236, value_neg_0_236, color_neg_0_236, lineId2)
+lineId4 = processLevel(show_0, value_0, color_0, lineId3)
+lineId5 = processLevel(show_0_236, value_0_236, color_0_236, lineId4)
+lineId6 = processLevel(show_0_382, value_0_382, color_0_382, lineId5)
+lineId7 = processLevel(show_0_5, value_0_5, color_0_5, lineId6)
+lineId8 = processLevel(show_0_618, value_0_618, color_0_618, lineId7)
+lineId9 = processLevel(show_0_65, value_0_65, color_0_65, lineId8)
+lineId10 = processLevel(show_0_786, value_0_786, color_0_786, lineId9)
+lineId11 = processLevel(show_1, value_1, color_1, lineId10)
+lineId12 = processLevel(show_1_272, value_1_272, color_1_272, lineId11)
+lineId13 = processLevel(show_1_414, value_1_414, color_1_414, lineId12)
+lineId14 = processLevel(show_1_618, value_1_618, color_1_618, lineId13)
+lineId15 = processLevel(show_1_65, value_1_65, color_1_65, lineId14)
+lineId16 = processLevel(show_2_618, value_2_618, color_2_618, lineId15)
+lineId17 = processLevel(show_2_65, value_2_65, color_2_65, lineId16)
+lineId18 = processLevel(show_3_618, value_3_618, color_3_618, lineId17)
+lineId19 = processLevel(show_3_65, value_3_65, color_3_65, lineId18)
+lineId20 = processLevel(show_4_236, value_4_236, color_4_236, lineId19)
+lineId21 = processLevel(show_4_618, value_4_618, color_4_618, lineId20)
+//’Ç‰Á**********************************************
+lineId22 = processLevel(show_neg_0_5, value_neg_0_5, color_neg_0_5, lineId21)
+lineId23 = processLevel(show_neg_0_786, value_neg_0_786, color_neg_0_786, lineId22)
+lineId24 = processLevel(show_neg_1, value_neg_1, color_neg_1, lineId23)
+lineId25 = processLevel(show_neg_1_272, value_neg_1_272, color_neg_1_272, lineId24)
+lineId26 = processLevel(show_neg_1_414, value_neg_1_414, color_neg_1_414, lineId25)
+lineId27 = processLevel(show_neg_1_5, value_neg_1_5, color_neg_1_5, lineId26)
+lineId28 = processLevel(show_neg_1_618, value_neg_1_618, color_neg_1_618, lineId27)
+lineId29 = processLevel(show_neg_1_65, value_neg_1_65, color_neg_1_65, lineId28)
+lineId30 = processLevel(show_neg_1_786, value_neg_1_786, color_neg_1_786, lineId29)
+lineId31 = processLevel(show_neg_2_272, value_neg_2_272, color_neg_2_272, lineId30)
+lineId32 = processLevel(show_neg_2_414, value_neg_2_414, color_neg_2_414, lineId31)
+lineId33 = processLevel(show_neg_2_5, value_neg_2_5, color_neg_2_5, lineId32)
+lineId34 = processLevel(show_neg_2_618, value_neg_2_618, color_neg_2_618, lineId33)
+lineId35 = processLevel(show_neg_2_65, value_neg_2_65, color_neg_2_65, lineId34)
+lineId36 = processLevel(show_neg_2_786, value_neg_2_786, color_neg_2_786, lineId35)
+lineId37 = processLevel(show_neg_3_618, value_neg_3_618, color_neg_3_618, lineId36)
+lineId38 = processLevel(show_neg_3_65, value_neg_3_65, color_neg_3_65, lineId37)
+lineId39 = processLevel(show_neg_2, value_neg_2, color_2, lineId38)
+lineId40 = processLevel(show_1_786, value_1_786, color_1_786, lineId39)
+lineId41 = processLevel(show_1_5, value_1_5, color_1_5, lineId40)
+lineId42 = processLevel(show_2, value_2, color_2, lineId41)
+lineId43 = processLevel(show_2_272, value_2_272, color_2_272, lineId42)
+lineId44 = processLevel(show_2_414, value_2_414, color_2_414, lineId43)
+lineId45 = processLevel(show_2_5, value_2_5, color_2_5, lineId44)
+lineId46 = processLevel(show_2_786, value_2_786, color_2_786, lineId45)
+lineId47 = processLevel(show_3, value_3, color_3, lineId46)
+lineId48 = processLevel(show_neg_3, value_neg_3, color_3, lineId47)
+
+//Probability***************************************************************************
+//***************************************************************************
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ? joebaus
+//@version=5
+
+// ???????????????????? Acknowledgements {
+// - Fortunate, a good friend who helped me significantly start my research.
+// - Telugu Traders Community, for their video on calculating cones.
+// - Savva Shanaev, for his NEDL tutorial on the Laplace distribution. 
+// - JeylaniB, for his Pine Script V5 extension for VS Studio Code.
+// - PineCoders and TradingView, for great Pine documentation and features.
+// - @RicardoSantos, for example code and idea of the Select Date feature.
+// - Anton Berlin, for his discussions on statistical interpretations.
+// }
+
+// ???????????????????? Indicator {
+//indicator(
+//  shorttitle	    = "Probability Cones", 
+//  title     	    = "Probability Cones", 
+//  max_lines_count   = 500,
+//  max_bars_back     = 5000,
+//  overlay   	    = true)
+// }
+
+// ???????????????????? Constants {
+// All tooltip constants are prefixed with "T_".
+T_SRC 		= "The data source to use for calculating the probability cones."
+T_DEV       = "Select the calculation method for the cone deviations."
+T_LOOKBACK 	= "The number of bars sampled for the probability calculations. Minimum value: 1 and Maximum value: 5000"
+T_FORECAST  = "The number of bars to project the probability cones forward. At 70 bars with all cones enabled, TradingView's line limitations will be hit, and the indicator will begin to remove earlier lines. Either keep this input below 70 or hide cones to get extra drawing lines."
+T_FILLS     = "The background color highlights between cone lines."
+T_BARSBACK  = "The number of bars + or - to position the probability cones."
+T_CONELOCK  = "Enables Anchor Type inputs. Keeps the cone origin stationary based on the Anchor Type selected. When disabled, cone origin will use a rolling window placement using the Bars Back to Place Cones input."
+T_ANCHOR    = "Select the method to anchor the probability cone origin."
+T_DATE      = "Keeps the cone origin stationary at the selected date."
+T_HTF       = "Sets the cone's origin to the beginning of a specified timeframe. Updates the cones automatically when a new period begins."
+T_OFFSET    = "The number of bars + or - to position cones after being anchored. Only effects the Higher Timeframe Anchor Type."
+T_MEAN      = "Select the desired mean for the cones. The Auto setting will use the default, recommended means for the current Deviation input. By default: Standard uses Average, Laplace and Absolute Deviation use Median."
+T_MEANDRIFT = "Adds or removes the drift to the cones caused by the mean's increasing or decreasing value in the future. Turning \"Use Mean Drift\" off projects forward only the initial value of the mean, and shifts the values of the cone's deviation lines relative to the mean."
+
+// All group constants are prefixed with "G_".
+G_SETTINGS	= "Cone Settings"
+G_ANCHOR	= "Anchor Settings ?"
+G_MEAN	    = "Mean Settings"
+G_CONE1_SETTINGS    = "First Cone's Settings"
+G_CONE2_SETTINGS    = "Second Cone's Settings"
+G_CONE3_SETTINGS    = "Third Cone's Settings"
+
+// Constants for i_deviation
+DEV_STANDARD    = "Standard"
+DEV_LAPLACE     = "Laplace Stdev"
+DEV_MAD         = "Absolute"
+
+// Constants for i_anchorType
+AT_BAR  = "Bar"
+AT_DATE = "Select Date"
+AT_HTF  = "Higher Timeframe"
+
+// Constants for i_mu
+MU_AUTO     = "Auto"
+MU_AVERAGE  = "Average"
+MU_MEDIAN   = "Median"
+
+// Constants for f_lineStyle()
+LINE_STYLE_SOLID    = "Solid"
+LINE_STYLE_DASHED   = "Dashed"
+LINE_STYLE_DOTTED   = "Dotted"
+
+// Inline constants.
+INLINE_CONE_DEV     = "Cone Deviations"
+INLINE_CONE_STYLE   = "Cone Line Styles"
+INLINE_CONE_COLOR   = "Cone Line Colors"
+INLINE_CONE_WIDTH   = "Cone Line Widths"
+INLINE_FILL_COLOR   = "Fill Color"
+INLINE_FILL_BOOL    = "Fill Bool"
+INLINE_MEAN_1       = "Mean Inline Settings 1"
+INLINE_MEAN_2       = "Mean Inline Settings 2"
+// }
+
+// ???????????????????? Inputs {
+// Here is how the cone in variables are written:
+
+// Cone Order:  "first", "second", or "third" cone.
+// Position:    Upper "Up" or lower "Dn" line of the cone.
+// Attribute:   "Color", "Width", etc.
+// All inputs prefixed with "i_", all arrays prefixed with "a_".
+
+// E.g. i_firstUpColor is the input for the first cone's, upper line, color.
+
+// ???????????????????? General Settings Inputs {
+i_src	    = input.source(
+  defval    = close, 
+  title     = "Source", 
+  tooltip   = T_SRC, 
+  group     = G_SETTINGS)
+
+i_deviation = input.string(
+  defval    = DEV_STANDARD, 
+  title     = "Deviation", 
+  options   = [DEV_STANDARD, 
+               DEV_LAPLACE,
+               DEV_MAD], 
+  tooltip   = T_DEV, 
+  group     = G_SETTINGS) 
+
+i_lookBack  = input.int(
+  defval    = 500, 
+  title     = "Bar Lookback", 
+  minval    = 1, 
+  maxval    = 5000, 
+  tooltip   = T_LOOKBACK, 
+  group     = G_SETTINGS)
+
+i_forecast  = input.int(
+  defval    = 30, 
+  title     = "Bar Forecast", 
+  minval    = 1, 
+  tooltip   = T_FORECAST, 
+  group     = G_SETTINGS)
+
+i_meanDriftBool = input.bool(
+  defval    = true, 
+  title     = "Use Mean Drift", 
+  tooltip   = T_MEANDRIFT,
+  group     = G_SETTINGS) 
+
+i_fillBool  = input.bool(
+  defval    = true, 
+  title     = "Show Fills", 
+  tooltip   = T_FILLS,
+  group     = G_SETTINGS) 
+// }
+
+// ???????????????????? Anchor Settings {
+i_barsBack  = input.int(
+  defval    = 20, 
+  title     = "Bars Back to Place Cones", 
+  tooltip   = T_BARSBACK, 
+  group     = G_ANCHOR) 
+
+i_coneLock  = input.bool(
+  defval    = false,
+  title     = "Lock Cones to Anchor Type",
+  tooltip   = T_CONELOCK,
+  group     = G_ANCHOR)
+
+i_anchorType    = input.string(
+  defval    = AT_BAR, 
+  title     = "Anchor Type", 
+  options   = [AT_BAR,
+               AT_DATE,
+               AT_HTF],
+  tooltip   = T_ANCHOR, 
+  group     = G_ANCHOR) 
+
+// @RicardoSantos contribution
+i_anchorDate    = time ==  input.time(
+  defval    = timestamp("2022-01-01"), 
+  title     = "Select Date to Place Cones", 
+  tooltip   = T_DATE,  
+  group     = G_ANCHOR)
+
+i_anchorHtf = input.timeframe(
+  defval    = "W", 
+  title     = "Higher Timeframe Anchor", 
+  tooltip   = T_HTF, 
+  group     = G_ANCHOR)
+
+i_anchorOffset  = input.int(
+  defval    = 1, 
+  title     = "HTF Anchor Offset", 
+  tooltip   = T_OFFSET, 
+  group     = G_ANCHOR) 
+// }
+
+// ???????????????????? Mean Input Settings {
+i_muBool    = input.bool(
+  defval    = true,
+  title     = "Show Mean",
+  group     = G_MEAN)
+
+i_muCalc    = input.string(
+  defval    = MU_AUTO, 
+  title     = "Mean Calculation", 
+  options   = [MU_AUTO,
+               MU_AVERAGE,
+               MU_MEDIAN],
+  tooltip   = T_MEAN,
+  inline    = INLINE_MEAN_1,
+  group     = G_MEAN) 
+
+i_muColor   = input.color(
+  defval    = color.new(color.orange, 0), 
+  title     = "Color",
+  inline    = INLINE_MEAN_2,
+  group     = G_MEAN)
+
+i_muWidth   = input.int(
+  defval    = 2, 
+  title     = "Width", 
+  minval    = 1, 
+  maxval    = 4, 
+  inline    = INLINE_MEAN_2,
+  group     = G_MEAN) 
+
+i_muLineStyle   = input.string(
+  defval    = LINE_STYLE_DOTTED, 
+  title     = "Line Style", 
+  options   = [LINE_STYLE_SOLID,
+               LINE_STYLE_DASHED,
+               LINE_STYLE_DOTTED],
+  inline    = INLINE_MEAN_2,
+  group     = G_MEAN)
+// }
+
+// ???????????????????? First Cone's Input Settings {
+i_firstConeBool = input.bool(
+  defval    = true, 
+  title     = "Show First Cone", 
+  group     = G_CONE1_SETTINGS) 
+
+i_firstUpColor  = input.color(
+  defval    = color.new(color.green, 0), 
+  title     = "Upper Cone Color",
+  inline    = INLINE_CONE_COLOR,
+  group     = G_CONE1_SETTINGS) 
+
+i_firstDnColor  = input.color(
+  defval    = color.new(color.green, 0), 
+  title     = "Lower Cone Color",
+  inline    = INLINE_CONE_COLOR,
+  group     = G_CONE1_SETTINGS) 
+
+i_firstUpDev    = input.float(
+  defval 	= 1, 
+  title		= "Upper Deviation",
+  step      = 0.01,
+  inline    = INLINE_CONE_DEV,
+  group		= G_CONE1_SETTINGS)
+
+// Dn cone deviation inputs are positive, and made negative later.
+i_firstDnDev    = input.float(
+  defval 	= 1, 
+  title		= "Lower Deviation",
+  step      = 0.01,
+  inline    = INLINE_CONE_DEV,
+  group		= G_CONE1_SETTINGS)
+
+i_firstUpLineStyle  = input.string(
+  defval    = LINE_STYLE_DOTTED, 
+  title     = "Upper Line Style", 
+  options   = [LINE_STYLE_SOLID,
+               LINE_STYLE_DASHED,
+               LINE_STYLE_DOTTED],
+  inline    = INLINE_CONE_STYLE,
+  group     = G_CONE1_SETTINGS)
+
+i_firstDnLineStyle  = input.string(
+  defval    = LINE_STYLE_DOTTED, 
+  title     = "Lower Line Style", 
+  options   = [LINE_STYLE_SOLID,
+               LINE_STYLE_DASHED,
+               LINE_STYLE_DOTTED],
+  inline    = INLINE_CONE_STYLE,
+  group     = G_CONE1_SETTINGS) 
+
+i_firstUpWidth  = input.int(
+  defval    = 2, 
+  title     = "Upper Cone Width", 
+  minval    = 1, 
+  maxval    = 4,  
+  inline    = INLINE_CONE_WIDTH,
+  group     = G_CONE1_SETTINGS) 
+
+i_firstDnWidth  = input.int(
+  defval    = 2, 
+  title     = "Lower Cone Width", 
+  minval    = 1, 
+  maxval    = 4,  
+  inline    = INLINE_CONE_WIDTH,
+  group     = G_CONE1_SETTINGS) 
+
+i_firstUpFillBool   = input.bool(
+  defval    = true, 
+  title     = "Show Upper Fill", 
+  inline    = INLINE_FILL_BOOL,
+  group     = G_CONE1_SETTINGS) 
+
+i_firstDnFillBool   = input.bool(
+  defval    = true, 
+  title     = "Show Lower Fill", 
+  inline    = INLINE_FILL_BOOL,
+  group     = G_CONE1_SETTINGS) 
+
+i_firstUpFill   = input.color(
+  defval    = color.new(color.green, 95), 
+  title     = "Upper Fill Color",
+  inline    = INLINE_FILL_COLOR,
+  group     = G_CONE1_SETTINGS) 
+
+i_firstDnFill   = input.color(
+  defval    = color.new(color.green, 95), 
+  title     = "Lower Fill Color",
+  inline    = INLINE_FILL_COLOR,
+  group     = G_CONE1_SETTINGS) 
+// }
+
+// ???????????????????? Second Cone's Input Settings {
+i_secondConeBool    = input.bool(
+  defval    = true, 
+  title     = "Show Second Cone", 
+  group     = G_CONE2_SETTINGS) 
+
+i_secondUpColor = input.color(
+  defval    = color.new(color.blue, 0), 
+  title     = "Upper Cone Color",
+  inline    = INLINE_CONE_COLOR,
+  group     = G_CONE2_SETTINGS) 
+
+i_secondDnColor = input.color(
+  defval    = color.new(color.blue, 0), 
+  title     = "Lower Cone Color",
+  inline    = INLINE_CONE_COLOR,
+  group     = G_CONE2_SETTINGS) 
+
+i_secondUpDev   = input.float(
+  defval 	= 2, 
+  title		= "Upper Deviation",
+  step      = 0.01,
+  inline    = INLINE_CONE_DEV,
+  group		= G_CONE2_SETTINGS)
+
+// Dn cone deviation inputs are positive, and made negative later.
+i_secondDnDev   = input.float(
+  defval 	= 2, 
+  title		= "Lower Deviation",
+  step      = 0.01,
+  inline    = INLINE_CONE_DEV,
+  group		= G_CONE2_SETTINGS)
+
+i_secondUpLineStyle = input.string(
+  defval    = LINE_STYLE_DOTTED, 
+  title     = "Upper Line Style", 
+  options   = [LINE_STYLE_SOLID,
+               LINE_STYLE_DASHED,
+               LINE_STYLE_DOTTED],
+  inline    = INLINE_CONE_STYLE,
+  group     = G_CONE2_SETTINGS)
+
+i_secondDnLineStyle = input.string(
+  defval    = LINE_STYLE_DOTTED, 
+  title     = "Lower Line Style", 
+  options   = [LINE_STYLE_SOLID,
+               LINE_STYLE_DASHED,
+               LINE_STYLE_DOTTED],
+  inline    = INLINE_CONE_STYLE,
+  group     = G_CONE2_SETTINGS) 
+
+i_secondWidthUp = input.int(
+  defval    = 2, 
+  title     = "Upper Cone Width", 
+  minval    = 1, 
+  maxval    = 4,  
+  inline    = INLINE_CONE_WIDTH,
+  group     = G_CONE2_SETTINGS) 
+
+i_secondDnWidth = input.int(
+  defval    = 2, 
+  title     = "Lower Cone Width", 
+  minval    = 1, 
+  maxval    = 4,  
+  inline    = INLINE_CONE_WIDTH,
+  group     = G_CONE2_SETTINGS) 
+
+i_secondUpFillBool  = input.bool(
+  defval    = true, 
+  title     = "Show Upper Fill", 
+  inline    = INLINE_FILL_BOOL,
+  group     = G_CONE2_SETTINGS) 
+
+i_secondDnFillBool  = input.bool(
+  defval    = true, 
+  title     = "Show Lower Fill", 
+  inline    = INLINE_FILL_BOOL,
+  group     = G_CONE2_SETTINGS) 
+
+i_secondUpFill  = input.color(
+  defval    = color.new(color.blue, 95), 
+  title     = "Fill Upper Color",
+  inline    = INLINE_FILL_COLOR,
+  group     = G_CONE2_SETTINGS) 
+
+i_secondDnFill  = input.color(
+  defval    = color.new(color.blue, 95), 
+  title     = "Fill Lower Color",
+  inline    = INLINE_FILL_COLOR,
+  group     = G_CONE2_SETTINGS) 
+// }
+
+// ???????????????????? Third Cone's Input Settings {
+i_thirdConeBool = input.bool(
+  defval    = true, 
+  title     = "Show Third Cone", 
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdUpColor  = input.color(
+  defval    = color.new(color.red, 0), 
+  title     = "Upper Cone Color",
+  inline    = INLINE_CONE_COLOR,
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdDnColor  = input.color(
+  defval    = color.new(color.red, 0), 
+  title     = "Lower Cone Color",
+  inline    = INLINE_CONE_COLOR,
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdUpDev    = input.float(
+  defval 	= 3, 
+  title		= "Upper Deviation",
+  step      = 0.01,
+  inline    = INLINE_CONE_DEV,
+  group		= G_CONE3_SETTINGS)
+
+// Dn cone deviation inputs are positive, made negative later.
+i_thirdDnDev    = input.float(
+  defval 	= 3, 
+  title		= "Lower Deviation",
+  step      = 0.01,
+  inline    = INLINE_CONE_DEV,
+  group		= G_CONE3_SETTINGS)
+
+i_thirdUpLineStyle  = input.string(
+  defval    = LINE_STYLE_DOTTED, 
+  title     = "Upper Line Style", 
+  options   = [LINE_STYLE_SOLID,
+               LINE_STYLE_DASHED,
+               LINE_STYLE_DOTTED],
+  inline    = INLINE_CONE_STYLE,
+  group     = G_CONE3_SETTINGS)
+
+i_thirdDnLineStyle  = input.string(
+  defval    = LINE_STYLE_DOTTED, 
+  title     = "Lower Line Style", 
+  options   = [LINE_STYLE_SOLID,
+               LINE_STYLE_DASHED,
+               LINE_STYLE_DOTTED],
+  inline    = INLINE_CONE_STYLE,
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdUpWidth  = input.int(
+  defval    = 2, 
+  title     = "Upper Cone Width", 
+  minval    = 1, 
+  maxval    = 4,  
+  inline    = INLINE_CONE_WIDTH,
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdDnWidth  = input.int(
+  defval    = 2, 
+  title     = "Lower Cone Width", 
+  minval    = 1, 
+  maxval    = 4,  
+  inline    = INLINE_CONE_WIDTH,
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdUpFillBool   = input.bool(
+  defval    = true, 
+  title     = "Show Upper Fill", 
+  inline    = INLINE_FILL_BOOL,
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdDnFillBool   = input.bool(
+  defval    = true, 
+  title     = "Show Lower Fill", 
+  inline    = INLINE_FILL_BOOL,
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdUpFill   = input.color(
+  defval    = color.new(color.red, 95), 
+  title     = "Fill Upper Color",
+  inline    = INLINE_FILL_COLOR,
+  group     = G_CONE3_SETTINGS) 
+
+i_thirdDnFill   = input.color(
+  defval    = color.new(color.red, 95), 
+  title     = "Fill Lower Color",
+  inline    = INLINE_FILL_COLOR,
+  group     = G_CONE3_SETTINGS) 
+// }
+
+// }
+
+// ???????????????????? Calculations {
+
+// ???????????????????? Array Index Variables {
+// coneForecast adds 1 to i_forecast.
+// This prevents an array from being a length making the forecast 1 bar short.
+coneForecast = i_forecast + 1
+
+// coneForecastIndex stops repetitition in "for" loops.
+// While i_forecast is equivalent, this variable is explicit for indexing.
+coneForecastIndex = coneForecast - 1
+// }
+
+// ???????????????????? Cone Origin Anchor Variables {
+// Barlock variable
+barLock = ta.valuewhen(barstate.isnew == true, bar_index, 0)
+
+// Date Select, anchor variable
+// @RicardoSantos contribution
+var int dateAnchor = na
+
+// Last time i_anchorDate was true, get bar_index and set to dateAnchor.
+if i_anchorDate == true
+    dateAnchor := bar_index
+
+// Get the close of the prior, historical higher timeframe.
+// barmerge.lookahead_on resolves historical cone anchor repaints.
+higherTimeframe = request.security(
+  symbol        = syminfo.tickerid, 
+  timeframe     = i_anchorHtf, 
+  expression    = close[1], 
+  lookahead     = barmerge.lookahead_on)
+
+// Find the numbers of barssince the start a new candle based on i_anchorHtf.
+htfAnchor = ta.barssince(higherTimeframe[1] != higherTimeframe)
+
+// If i_coneLock is enabled, use the respective anchorBarIndex bar_index input.
+// Otherwise, default back to the i_barsBack input.
+anchorBar = switch i_coneLock
+    true    => bar_index - i_barsBack - (bar_index - barLock[1] - 1)
+    false   => bar_index - i_barsBack
+
+anchorDate    = switch i_coneLock
+    true    => dateAnchor
+    false   => bar_index - i_barsBack
+
+anchorHtf = switch i_coneLock
+    true    => bar_index - htfAnchor - i_anchorOffset
+    false   => bar_index - i_barsBack
+
+// What bar index to start displaying the cones. Used for f_coneLine().
+anchorBarIndex    = switch i_anchorType
+    AT_BAR  => anchorBar
+    AT_DATE => anchorDate
+    AT_HTF  => anchorHtf
+
+// If i_coneLock is enabled, use the respective i_anchorType subscript input.
+// Otherwise, default back to the i_barsBack input.
+anchorBarSub  = switch i_coneLock
+    true    => i_barsBack + (bar_index - barLock[1] - 1)
+    false   => i_barsBack
+
+anchorDateSub = switch i_coneLock
+    true    => bar_index - dateAnchor
+    false   => i_barsBack
+
+anchorHtfSub  = switch i_coneLock
+    true    => htfAnchor + i_anchorOffset
+    false   => i_barsBack
+
+// Get the equivalent anchorBarIndex value to use as a subscript[] for variables.
+// Used in "Devation and Mean Switches", and "Cone Value Array" sections.
+anchorBarIndexSub   = switch i_anchorType
+    AT_BAR  => anchorBarSub
+    AT_DATE => anchorDateSub
+    AT_HTF  => anchorHtfSub
+// }
+
+// ???????????????????? Log Returns Variables {
+logReturns      = math.log(i_src / i_src[1])
+logReturnsMed   = ta.median(logReturns, i_lookBack)
+logReturnsAvg   = ta.sma(logReturns, i_lookBack) 
+logReturnsDev   = ta.stdev(logReturns, i_lookBack)
+// }
+
+// ???????????????????? Mean Switches {
+// Based on i_deviation, select the mean.
+meanAuto    = switch i_deviation
+    DEV_STANDARD    => logReturnsAvg[anchorBarIndexSub]
+    DEV_LAPLACE     => logReturnsMed[anchorBarIndexSub] 
+    DEV_MAD         => logReturnsMed[anchorBarIndexSub] 
+
+// Based on the mean input, return autoMean or a manually selected mean.
+meanSwitch  = switch i_muCalc
+    MU_AUTO         => meanAuto
+    MU_AVERAGE      => logReturnsAvg
+    MU_MEDIAN       => logReturnsMed
+// }
+
+// ???????????????????? Absolute Deviation Calculation {
+a_absDev    = array.new_float(i_lookBack, na) 
+
+for i = 0 to i_lookBack - 1
+    _absDev = math.abs(logReturns[i] - meanSwitch)  // Absolute Deviation Calculation
+    array.set(id = a_absDev, index = i, value = _absDev) 
+
+absDev  = array.avg(id = a_absDev)   // Absolute Deviation
+// }
+
+// ???????????????????? Laplace Standard Deviation Calculation {
+laplaceVar = 2 * math.pow(absDev, 2)
+laplaceStdev = math.sqrt(laplaceVar)
+// }
+
+// ???????????????????? Devation Switches {
+devSelectUp = switch i_deviation
+    DEV_STANDARD    => logReturnsDev[anchorBarIndexSub]
+    DEV_LAPLACE     => laplaceStdev[anchorBarIndexSub]
+    DEV_MAD         => absDev[anchorBarIndexSub]
+
+devSelectDn = switch i_deviation
+    DEV_STANDARD    => logReturnsDev[anchorBarIndexSub]
+    DEV_LAPLACE     => laplaceStdev[anchorBarIndexSub]
+    DEV_MAD         => absDev[anchorBarIndexSub]
+// }
+
+// ???????????????????? a_conePeriod and a_conePeriodSqrt {
+// Holds an increasing int series: 1, 2, 3... up to coneForecast
+// This counts the number of bars to forecast the cones forward.
+a_conePeriod = array.new_int(size = coneForecast, initial_value = na)
+
+// Holds square root of a_conePeriod.
+// When multiplied by a deviation, generates the a cone line's curve.
+a_conePeriodSqrt = array.new_float(size = coneForecast, initial_value = na)
+
+for i = 0 to coneForecastIndex
+    
+    int _conePeriod = na
+    _conePeriod  := i + 1
+    array.set(id = a_conePeriod, index = i, value = _conePeriod) 
+    
+    _conePeriodSqrt = math.sqrt(number = _conePeriod)
+    array.set(id = a_conePeriodSqrt, index = i, value = _conePeriodSqrt) 
+// }
+
+// ???????????????????? conePeriod and DevSqrt Arrays {
+a_conePeriodAvg = array.new_float(size = coneForecast, initial_value = na)
+
+// Arrays for the three cones.
+a_firstUpDevSqrt    = array.new_float(size = coneForecast, initial_value = na)
+a_firstDnDevSqrt    = array.new_float(size = coneForecast, initial_value = na)
+
+a_secondUpDevSqrt   = array.new_float(size = coneForecast, initial_value = na)
+a_secondDnDevSqrt   = array.new_float(size = coneForecast, initial_value = na)
+
+a_thirdUpDevSqrt    = array.new_float(size = coneForecast, initial_value = na)
+a_thirdDnDevSqrt    = array.new_float(size = coneForecast, initial_value = na)
+
+for i = 0 to coneForecastIndex
+
+    // When i_meanDriftBool is true, multiply the mean by a_conePeriod at i
+    // If false, set the initial mean value, from i to coneForecastIndex, to a_conePeriodAvg
+    _conePeriodAvg = switch i_meanDriftBool 
+        true    => meanSwitch * array.get(id = a_conePeriod, index = i)
+        false   => meanSwitch
+    array.set(id = a_conePeriodAvg, index = i, value = _conePeriodAvg) 
+
+    // Multiply the stdev of log returns by the sqrt of the cone period.
+    _firstUpDevSqrt = i_firstUpDev * devSelectUp * array.get(id = a_conePeriodSqrt, index = i)
+    array.set(id = a_firstUpDevSqrt,   index = i, value = _firstUpDevSqrt)
+
+    _firstDnDevSqrt = i_firstDnDev * devSelectDn * array.get(id = a_conePeriodSqrt, index = i)
+    array.set(id = a_firstDnDevSqrt,   index = i, value = _firstDnDevSqrt)
+
+    _secondUpDevSqrt = i_secondUpDev * devSelectUp * array.get(id = a_conePeriodSqrt, index = i)
+    array.set(id = a_secondUpDevSqrt,  index = i, value = _secondUpDevSqrt)
+
+    _secondDnDevSqrt = i_secondDnDev * devSelectDn * array.get(id = a_conePeriodSqrt, index = i)
+    array.set(id = a_secondDnDevSqrt,  index = i, value = _secondDnDevSqrt)
+
+    _thirdUpDevSqrt = i_thirdUpDev * devSelectUp * array.get(id = a_conePeriodSqrt, index = i)
+    array.set(id = a_thirdUpDevSqrt,   index = i, value = _thirdUpDevSqrt)
+
+    _thirdDnDevSqrt = i_thirdDnDev * devSelectDn * array.get(id = a_conePeriodSqrt, index = i)
+    array.set(id = a_thirdDnDevSqrt,   index = i, value = _thirdDnDevSqrt)
+// }
+
+// ???????????????????? Percent Arrays {
+a_firstUpPercent    = array.new_float(size = coneForecast, initial_value = na)
+a_firstDnPercent    = array.new_float(size = coneForecast, initial_value = na) 
+
+a_secondUpPercent   = array.new_float(size = coneForecast, initial_value = na)
+a_secondDnPercent   = array.new_float(size = coneForecast, initial_value = na) 
+
+a_thirdUpPercent    = array.new_float(size = coneForecast, initial_value = na)
+a_thirdDnPercent    = array.new_float(size = coneForecast, initial_value = na) 
+
+for i = 0 to coneForecastIndex
+    // If i_meanDriftBool is true, a_conePeriodAvg equals meanSwitch for i to coneForecastIndex
+
+    _firstUpPercent =   array.get(id = a_conePeriodAvg, index = i) +
+                      array.get(id = a_firstUpDevSqrt, index = i) 
+    array.set(id = a_firstUpPercent, index = i, value = _firstUpPercent)
+
+    _firstDnPercent =   array.get(id = a_conePeriodAvg, index = i) -
+                      array.get(id = a_firstDnDevSqrt, index = i) 
+    array.set(id = a_firstDnPercent, index = i, value = _firstDnPercent)
+
+    _secondUpPercent =   array.get(id = a_conePeriodAvg, index = i) +
+                      array.get(id = a_secondUpDevSqrt, index = i) 
+    array.set(id = a_secondUpPercent, index = i, value = _secondUpPercent)
+
+    _secondDnPercent =   array.get(id = a_conePeriodAvg, index = i) -
+                      array.get(id = a_secondDnDevSqrt, index = i) 
+    array.set(id = a_secondDnPercent, index = i, value = _secondDnPercent)
+
+    _thirdUpPercent =   array.get(id = a_conePeriodAvg, index = i) +
+                      array.get(id = a_thirdUpDevSqrt, index = i) 
+    array.set(id = a_thirdUpPercent, index = i, value = _thirdUpPercent)
+
+    _thirdDnPercent =   array.get(id = a_conePeriodAvg, index = i) -
+                      array.get(id = a_thirdDnDevSqrt, index = i) 
+    array.set(id = a_thirdDnPercent, index = i, value = _thirdDnPercent)
+// }
+
+// ???????????????????? Cone Value Arrays {
+a_meanValue     = array.new_float(size = coneForecast, initial_value = na)
+
+a_firstUpValue  = array.new_float(size = coneForecast, initial_value = na)
+a_firstDnValue  = array.new_float(size = coneForecast, initial_value = na) 
+
+a_secondUpValue = array.new_float(size = coneForecast, initial_value = na)
+a_secondDnValue = array.new_float(size = coneForecast, initial_value = na) 
+
+a_thirdUpValue  = array.new_float(size = coneForecast, initial_value = na)
+a_thirdDnValue  = array.new_float(size = coneForecast, initial_value = na) 
+
+for i = 0 to coneForecastIndex
+
+    _a_meanValue = i_src[anchorBarIndexSub] * math.exp( array.get(id = a_conePeriodAvg, index = i) )
+    array.set(id = a_meanValue, index = i, value = _a_meanValue) 
+
+    _firstUpConeValue = i_src[anchorBarIndexSub] * math.exp( array.get(id = a_firstUpPercent, index = i) )
+    array.set(id = a_firstUpValue, index = i, value = _firstUpConeValue) 
+    
+    _firstDnConeValue = i_src[anchorBarIndexSub] * math.exp( array.get(id = a_firstDnPercent, index = i) )
+    array.set(id = a_firstDnValue, index = i, value = _firstDnConeValue) 
+
+    _secondUpConeValue = i_src[anchorBarIndexSub] * math.exp( array.get(id = a_secondUpPercent, index = i) )
+    array.set(id = a_secondUpValue, index = i, value = _secondUpConeValue) 
+
+    _secondDnConeValue = i_src[anchorBarIndexSub] * math.exp( array.get(id = a_secondDnPercent, index = i) )
+    array.set(id = a_secondDnValue, index = i, value = _secondDnConeValue) 
+
+    _thirdUpConeValue = i_src[anchorBarIndexSub] * math.exp( array.get(id = a_thirdUpPercent, index = i) )
+    array.set(id = a_thirdUpValue, index = i, value = _thirdUpConeValue) 
+
+    _thirdDnConeValue = i_src[anchorBarIndexSub] * math.exp( array.get(id = a_thirdDnPercent, index = i) )
+    array.set(id = a_thirdDnValue, index = i, value = _thirdDnConeValue) 
+// }
+
+// }
+
+// ???????????????????? Lines and Fills {
+
+// ???????????????????? Draw Functions {
+
+// ???????????????????? Line Style Function {
+f_lineStyle(_lineStyle) =>
+    // @param _lineStyle, user input line style variable.
+    _output = switch _lineStyle
+        LINE_STYLE_SOLID    => line.style_solid 
+        LINE_STYLE_DASHED   => line.style_dashed
+        LINE_STYLE_DOTTED   => line.style_dotted
+// }
+
+// ???????????????????? Cone Line Function {
+f_coneLine(_a_coneValue, _color, _style, _width, _coneToggle) =>
+
+    // @param _a_coneValue, the array holding the cone's forecast values.
+    // @param _color, line color variable.
+    // @param _style, line style variable.
+    // @param _width, line width variable.
+    // @param _coneToggle, bool input for this line.
+
+    var _a_coneLine = array.new_line(size = coneForecast, initial_value = na)
+
+    // Offset "i" to get the next _a_coneValue to use as y2 in _coneLine.
+    _a_x2Period     = array.new_int(size =  coneForecast, initial_value = na) 
+
+    // If the respective cone and line input toggles are on, display the line.
+    if _coneToggle == true
+
+        // For loop to generate offset "i" array in _a_x2Period
+        for i = 0 to coneForecastIndex - 1  // Index is one shorter than "i".
+            _x2Period = i + 1               // Create offset index value from "i".
+            array.set(id = _a_x2Period, index = i, value = _x2Period)
+
+        for i = 0 to coneForecastIndex 
+
+            _coneX1  = anchorBarIndex + i
+            _coneX2  = anchorBarIndex + array.get(id = _a_x2Period, index = i)
+
+            line _coneLine = na
+
+            _coneLine   := line.new(
+              x1        = _coneX1, 
+              y1        = array.get(id = _a_coneValue, index = i ), 
+              x2        = _coneX2, 
+              y2        = array.get(id = _a_coneValue, index = array.get(id = _a_x2Period, index = i) ), 
+              xloc      = xloc.bar_index,
+              extend    = extend.none, 
+              color     = _color, 
+              style     = _style, 
+              width     = _width)
+            
+            array.push(id = _a_coneLine, value = _coneLine)
+
+            if array.size(id = _a_coneLine) > coneForecast
+                _ln = array.shift(id = _a_coneLine)
+                line.delete(id = _ln)   
+
+    _a_coneLine
+// }
+
+// ???????????????????? Cone Fill Function {
+f_coneFill(_a_line1, _a_line2, _color, _i_fillBool) =>
+
+    // @param _a_line1, is the first line's array for the fill function.
+    // @param _a_line2, is the second line's array for the fill function.
+    // @param _color, color variable.
+    // @param _i_fillBool, bool input for this fill.
+
+    _a_linefill = array.new_linefill()
+
+    if i_fillBool == true       // i_fillBool is a global variable.
+        if _i_fillBool == true  // _i_fillBool is a local variable.
+            for i = 0 to coneForecastIndex
+        
+                line _line1 = na
+                line _line2 = na
+                
+                _line1 := array.get(id = _a_line1, index = i) 
+                _line2 := array.get(id = _a_line2, index = i)
+        
+                _linefill = linefill.new(_line1, _line2, _color)
+        
+                array.push(id = _a_linefill, value = _linefill) 
+        
+                if array.size(id = _a_linefill) > coneForecast
+                    _ln = array.shift(id = _a_linefill)
+                    linefill.delete(id = _ln)   
+// }
+
+// }
+
+// ???????????????????? Draw Indicator {
+
+// ???????????????????? Draw Lines {
+meanLine    = f_coneLine(
+  a_meanValue, 
+  i_muColor, 
+  f_lineStyle(i_muLineStyle), 
+  i_muWidth,
+  i_muBool)
+
+firstUpLine = f_coneLine(
+  a_firstUpValue, 
+  i_firstUpColor, 
+  f_lineStyle(i_firstUpLineStyle), 
+  i_firstUpWidth,
+  i_firstConeBool)
+
+firstDnLine = f_coneLine(
+  a_firstDnValue, 
+  i_firstDnColor, 
+  f_lineStyle(i_firstDnLineStyle), 
+  i_firstDnWidth,
+  i_firstConeBool)
+
+secondUpLine = f_coneLine(
+  a_secondUpValue, 
+  i_secondUpColor, 
+  f_lineStyle(i_secondUpLineStyle), 
+  i_secondWidthUp,
+  i_secondConeBool)
+
+secondDnLine = f_coneLine(
+  a_secondDnValue, 
+  i_secondDnColor, 
+  f_lineStyle(i_secondDnLineStyle), 
+  i_secondDnWidth,
+  i_secondConeBool)
+
+thirdUpLine = f_coneLine(
+  a_thirdUpValue, 
+  i_thirdUpColor, 
+  f_lineStyle(i_thirdUpLineStyle), 
+  i_thirdUpWidth,
+  i_thirdConeBool)
+
+thirdDnLine = f_coneLine(
+  a_thirdDnValue, 
+  i_thirdDnColor, 
+  f_lineStyle(i_thirdDnLineStyle), 
+  i_thirdDnWidth,
+  i_thirdConeBool)
+// }
+
+// ???????????????????? Draw Fills
+f_coneFill(meanLine, firstUpLine, i_firstUpFill, i_firstUpFillBool)
+f_coneFill(meanLine, firstDnLine, i_firstDnFill, i_firstDnFillBool)
+f_coneFill(firstUpLine, secondUpLine, i_secondUpFill, i_secondUpFillBool)
+f_coneFill(firstDnLine, secondDnLine, i_secondDnFill, i_secondDnFillBool)
+f_coneFill(secondUpLine, thirdUpLine, i_thirdUpFill, i_thirdUpFillBool)
+f_coneFill(secondDnLine, thirdDnLine, i_thirdDnFill, i_thirdDnFillBool)
+// }
+
+// }
+
+
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ? Kaniugu
+
+//ultimate***************************************************************************
+//***************************************************************************
+// VALUE
+period          = input.int(200,   "Period", minval = 1)
+factor          = input.float(2.0, "Factor", minval = 0.1)
+profit          = input.float(1.0, "Take Profit", minval = 0.1, group = "Risk & Reward")
+loss            = input.float(1.0, "Stop Loss",   minval = 0.1, group = "Risk & Reward")
+trendline       = input.bool(true, "Show Trendlines", group = "Visibility")
+signal          = input.bool(true, "Enable Signals",  group = "Visibility")
+
+// PRECISION
+precision(v)    => str.format("{0,number,#.########}", v)
+
+// LINEAR REGRESSION CHANNEL
+channel(src, n) =>
+    avg         = math.sum(src, n) / n
+    slope       = ta.linreg(src, n, 0) - ta.linreg(src, n, 1)
+    intercept   = avg - slope * math.floor(n / 2) + ((1 - (n % 2)) / 2) * slope
+    linreg      = intercept  + slope * (n - 1), deviation = 0.0
+    for index = 0 to n - 1
+        deviation := deviation + math.pow(src[index] - (slope * (n - index) + intercept), 2)
+    deviation := math.sqrt(deviation / n) * factor
+    [linreg, intercept, deviation, slope, n]
+
+// POINT
+[linreg, intercept, deviation, slope, length] = channel(close, period)
+
+// LEVEL
+var peak        = float(na)
+var trough      = float(na)
+peak            := open >  close and open[1] <= close[1] ? high : peak
+trough          := open <= close and open[1] >  close[1] ? low  : trough
+
+// HIGH RISK LEVEL
+var peakHighRisk = float(na), var troughHighRisk = float(na)
+peakHighRisk    := peak > peak[1]     and close > linreg + deviation ? close : peakHighRisk
+troughHighRisk  := trough < trough[1] and close < linreg - deviation ? close : troughHighRisk
+
+// HIGH RISK SIGNAL
+short   = peakHighRisk   > peakHighRisk[1]
+long    = troughHighRisk < troughHighRisk[1]
+
+// SPREAD
+var top = float(na), var bottom = float(na)
+if short
+    label.new(bar_index, na, str.format("{0,number,#.##}", (high - bottom) / high * 100), yloc = yloc.abovebar, style = label.style_none, textcolor = color.red),  top := high
+if long
+    label.new(bar_index, na, str.format("{0,number,#.##}", (top - low) / top * 100),      yloc = yloc.belowbar, style = label.style_none, textcolor = color.blue), bottom := low
+
+// UPDATE TRENDLINE
+var line median = na, var line resistance = na, var line support = na, var line upper = na, var line lower = na
+line.delete(median[1]), line.delete(resistance[1]), line.delete(support[1]), line.delete(upper[1]), line.delete(lower[1])
+
+// DRAW TRENDLINE
+median          := trendline ? line.new(bar_index - length + 1, intercept, bar_index, linreg, xloc.bar_index, extend.right, slope < 0 ? color.lime : color.aqua, line.style_dotted, 2) : na
+resistance      := trendline ? line.new(bar_index - length + 1, intercept + deviation, bar_index, linreg + deviation, xloc.bar_index, extend.right, color.red ,  line.style_dashed, 2) : na
+support         := trendline ? line.new(bar_index - length + 1, intercept - deviation, bar_index, linreg - deviation, xloc.bar_index, extend.right, color.blue,  line.style_dashed, 2) : na
+upper           := trendline ? line.new(bar_index - length + 1, intercept + deviation / 2, bar_index, linreg + deviation / 2, xloc.bar_index, extend.right, color.red , line.style_dashed, 1) : na
+lower           := trendline ? line.new(bar_index - length + 1, intercept - deviation / 2, bar_index, linreg - deviation / 2, xloc.bar_index, extend.right, color.blue, line.style_dashed, 1) : na
+
+// DRAW SIGNAL
+plotshape(short, style = shape.xcross,  color = color.red,  location = location.abovebar, size = size.tiny)
+plotshape(long,  style = shape.diamond, color = color.blue, location = location.belowbar, size = size.tiny)
+
+// DRAW RIBBON
+ribbon = ta.ema(close, 24) > ta.ema(close, 8) ? color.aqua : color.lime
+plot(ta.ema(close,  8), color = color.new(ribbon, 40), title =  "EMA 8")
+plot(ta.ema(close, 12), color = color.new(ribbon, 50), title = "EMA 12")
+plot(ta.ema(close, 16), color = color.new(ribbon, 60), title = "EMA 16")
+plot(ta.ema(close, 20), color = color.new(ribbon, 70), title = "EMA 20")
+plot(ta.ema(close, 24), color = color.new(ribbon, 80), title = "EMA 24")
+fill(plot((open + close) / 2, display = display.none), plot(ta.ema(close, 24), display = display.none), color = color.new(ribbon, 96))
+
+// ENTRY POINT
+alertcondition(short, title = "Short", message = "Entry Short")
+alertcondition(long,  title = "Long",  message = "Entry Long")
+
+
+//@version=4
+// author: capissimo
+
+// Simple Mean method
+// The idea behind simple mean method is to somehow extend historical mean to the future. 
+// In this case the forecast equals to last value plus average change.
+
+//*** Inputs
+price = input(close, "Price Data")
+p     = input(5,     "Lookback Window")
+fp    = input(34,    "Forecasted Periods")
+
+//*** Main
+simple_mean(x, p) => x[1] + ta.sma(ta.change(x, p), p)
+
+forecast = simple_mean(price, p) 
+
+var line fl = na
+line.delete(fl[1])
+fl := line.new(time, close, time + 60 * 60 * 24 * fp, forecast, 
+               xloc.bar_time, extend=extend.none, style=line.style_solid, color=color.blue, width=2)
+
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// ? LuxAlgo
+
+//@version=4
+echo_length = input(200,'Evaluation Window')
+fcast  = input(200,'Forecast Window')
+
+fmode  = input.string('Similarity','Forecast Mode',options=['Similarity','Dissimilarity'])
+cmode  = input.string('Cumulative','Forecast Construction',options=['Cumulative','Mean','Linreg'])
+src    = input(close)
+
+fcast_col   = input(#2157f3,'Forecast Style',inline='fcast_style',group='Style')
+fcast_style = input('? ? ?','',inline='fcast_style',group='Style')
+
+show_area   = input(true,'Show Area',inline='areas',group='Style')
+fcast_area  = input(color.new(#ff5d00,50),'',inline='areas',group='Style')
+corr_area   = input(color.new(#0cb51a,50),'',inline='areas',group='Style')
+eval_area   = input(color.new(color.gray,50),'',inline='areas',group='Style')
+//----
+var lines = array.new_line(0)
+if barstate.isfirst
+    for i = 0 to fcast-1
+        array.push(lines,line.new(na,na,na,na))
+//----
+n = bar_index
+d = ta.change(src)
+
+echo_top = ta.highest(src,echo_length+fcast*2)
+echo_btm = ta.lowest(src,echo_length+fcast*2)
+
+if barstate.islast
+    float val = na
+    k = 0
+    A = array.new_float(0)
+    X = array.new_int(0)
+    for i = 0 to fcast*2+echo_length
+        array.push(A,src[i])
+        if cmode == 'Linreg'
+            array.push(X,n[i])
+    
+    a = array.slice(A,0,fcast-1)
+    for i = 0 to echo_length-1
+        b = array.slice(A,fcast+i,fcast*2+i-1)
+        r = array.covariance(a,b)/(array.stdev(a)*array.stdev(b))
+        if fmode == 'Similarity'
+            val := r >= nz(val,r) ? r : val
+        else
+            val := r <= nz(val,r) ? r : val
+        k := val == r ? i : k
+    
+    prev = src
+    current = src
+    
+    for i = 0 to fcast-1
+        e = d[fcast+k+(fcast-i-1)]
+        if cmode == 'Mean'
+            current := array.avg(a) + e
+        else if cmode == 'Linreg'
+            a = array.slice(A,0,fcast)
+            x = array.slice(X,0,fcast)
+            alpha = array.covariance(a,x)/array.variance(x)
+            beta = array.avg(a) - alpha*array.avg(x)
+            current := alpha*(n+i+1) + beta + e
+        else
+            current += e
+        
+        l = array.get(lines,i)
+        line.set_xy1(l,n+i,prev)
+        line.set_xy2(l,n+i+1,current)
+        line.set_color(l,fcast_col)
+        
+        if fcast_style == '- - -'
+            line.set_style(l,line.style_dashed)
+        else if fcast_style == '? ? ?'
+            line.set_style(l,line.style_dotted)
+        
+        prev := current
+
+    if show_area    
+        box.delete(box.new(n-echo_length-fcast*2+1,echo_top,n-fcast+1,echo_btm,
+          border_color=na,
+          bgcolor=eval_area)[1])
+        box.delete(box.new(n-fcast+1,echo_top,n,echo_btm,
+          border_color=na,
+          bgcolor=fcast_area)[1])
+        box.delete(box.new(n-k-fcast*2+1,echo_btm,n-k-fcast,echo_top,
+          border_color=na,
+          bgcolor=corr_area)[1])
+          
+//ema***************************************************************************
+//***************************************************************************
+//@version=5
+//indicator(title="Moving Average Exponential", shorttitle="EMA", overlay=true, timeframe="", timeframe_gaps=true)
+len_ema = input.int(9, minval=1, title="Length_ema")
+src_ema = input(close, title="Source_ema")
+offset_ema = input.int(title="Offset_ema", defval=0, minval=-500, maxval=500)
+out_ema = ta.ema(src_ema, len_ema)
+plot(out_ema, title="EMA", color=color.blue, offset=offset_ema)
+
+ma_ema(source, length, type) =>
+    switch type
+        "SMA" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA" => ta.wma(source, length)
+        "VWMA" => ta.vwma(source, length)
+
+typeMA_ema = input.string(title = "Method_ema", defval = "SMA", options=["SMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group="Smoothing")
+smoothingLength_ema = input.int(title = "Length_ema", defval = 5, minval = 1, maxval = 100, group="Smoothing")
+
+smoothingLine_ema = ma_ema(out_ema, smoothingLength_ema, typeMA_ema)
+plot(smoothingLine_ema, title="Smoothing Line_ema", color=#f37f20, offset=offset_ema, display=display.none)
+
+//sma***************************************************************************
+//***************************************************************************
+//@version=5
+//indicator(title="Moving Average", shorttitle="MA", overlay=true, timeframe="", timeframe_gaps=true)
+len_sma = input.int(9, minval=1, title="Length_sma")
+src_sma = input(close, title="Source_sma")
+offset_sma = input.int(title="Offset_sma", defval=0, minval=-500, maxval=500)
+out_sma = ta.sma(src_sma, len_sma)
+plot(out_sma, color=color.blue, title="MA", offset=offset_sma)
+
+ma_sma(source, length, type) =>
+    switch type
+        "SMA" => ta.sma(source, length)
+        "EMA" => ta.ema(source, length)
+        "SMMA (RMA)" => ta.rma(source, length)
+        "WMA" => ta.wma(source, length)
+        "VWMA" => ta.vwma(source, length)
+
+typeMA_sma = input.string(title = "Method", defval = "SMA", options=["SMA", "EMA", "SMMA (RMA)", "WMA", "VWMA"], group="Smoothing")
+smoothingLength_sma = input.int(title = "Length_sma", defval = 5, minval = 1, maxval = 100, group="Smoothing")
+
+smoothingLine_sma = ma_sma(out_sma, smoothingLength_sma, typeMA_sma)
+plot(smoothingLine_sma, title="Smoothing Line_sma", color=#f37f20, offset=offset_sma, display=display.none)
